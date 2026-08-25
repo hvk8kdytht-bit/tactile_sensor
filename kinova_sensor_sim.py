@@ -43,6 +43,16 @@ PARK_POS = np.array([0.75, 0.3, 0.55])
 BOX_PARK = np.array([0.45, 0.35, 0.15])
 ARM_RATE = 0.0015
 ARM_MAX_FORCE = 10.0
+ARM_APPROACH_FAST = 0.15    # 臂动逼近巡航速度 (m/s): 压深目标距目标面>ARM_SLOW_ZONE
+ARM_APPROACH_SLOW = 0.005   # 终段逼近速度 (m/s): 慢速区内触面, 冲击<1N
+ARM_SLOW_ZONE = 0.008       # 慢速逼近区 (m): 须大于关节ref跟踪滞后(~2mm)并留余量,
+                            # 否则ref追平滞后时垫面仍以巡航速度触面
+TARGET_HOLD_KP = 10000.0   # 按压目标PD保持刚度(N/m): 10N按压让位约1mm
+TARGET_HOLD_KD = 100.0     # 按压目标平移阻尼
+TARGET_HOLD_KR = 5.0       # 按压目标姿态恢复刚度(N·m/rad)
+TARGET_HOLD_KDR = 0.1      # 按压目标转动阻尼: 半隐式施加(见_hold_press_target);
+                           # 显式上限2I/dt≈0.057(I≈5.7e-5kg·m²), 旧值0.4每步放大
+                           # 角速度13倍致目标块自旋楔入指垫(3000N)引发臂甩动
 
 DEFAULT_SIGNAL_CONFIG = {
     "enabled": True,
@@ -169,6 +179,14 @@ class SimSensor:
         # joint_7水平基准1.5708拖不回去(范围调不到大于1), 见方法注释
         self._setup_joint_limits()
 
+        # press_target改自由体后keyframe自动补零段会把它放到原点, 用
+        # qpos0(场景XML初始位姿)回填, 否则每次复位目标块瞬移进臂座
+        ja = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "press_target_joint")
+        if ja >= 0:
+            qa = self.model.jnt_qposadr[ja]
+            for k in range(self.model.nkey):
+                self.model.key_qpos[k, qa:qa + 7] = self.model.qpos0[qa:qa + 7]
+
         # 2F-85腱力上限±5N经连杆放大后夹取力不足, 内存中放宽(不改XML)
         fa = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "fingers_actuator")
         if fa >= 0:
@@ -260,12 +278,12 @@ class SimSensor:
            非相邻连杆仍正常互碰(真实自碰撞检测保留)。
         2) 触控mocap盒只与传感器垫/左指垫碰撞: 用户在3D视窗里把盒子拖进臂内
            也不会砸翻机械臂(mocap体接触等效静态几何, 求解器全力弹射臂)。
-        3) 红色按压目标只与传感器垫/左指垫碰撞: 臂动模式按压链路不变,
-           但臂本体被拖进目标时不再被静态几何卡死。
+        3) 红色按压目标是自由体+PD软保持(见_hold_press_target), 与全部几何
+           正常碰撞: 既不穿模(原来静态且只对传感器侧碰撞, 无传感器的右指垫
+           臂动逼近时直接扫穿目标块), 被撞时让位弹回也不会卡死伺服。
         """
         m = self.model
         BIT_TOUCH = 1 << 28   # 触控盒 <-> 传感器侧
-        BIT_TARGET = 1 << 27  # 按压目标 <-> 传感器侧
 
         # 1) 相邻连杆排除: 所有 parent 非 world 的 body 参与位分配
         bodies = [b for b in range(1, m.nbody) if m.body_parentid[b] != 0]
@@ -301,10 +319,6 @@ class SimSensor:
         if tg >= 0:
             m.geom_contype[tg] = BIT_TOUCH
             m.geom_conaffinity[tg] = BIT_TOUCH
-        pg = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "press_target_geom")
-        if pg >= 0:
-            m.geom_contype[pg] = BIT_TARGET
-            m.geom_conaffinity[pg] = 1 | bit[ts_bid] | bit[lp_bid]
 
     def _load_signal(self):
         cfg = dict(DEFAULT_SIGNAL_CONFIG)
@@ -337,17 +351,80 @@ class SimSensor:
         self.arm_q_ref = self.arm_home_q.copy()
         self.arm_q_goal = None
         self.arm_depth = 0.0
-        self.arm_ik_anchors = None
+        # 按压目标PD保持的参考位姿(home正解时目标在初始位姿)
+        self.press_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "press_target")
+        self.press_p0 = d.xpos[self.press_body_id].copy()
+        self.press_q0 = d.xquat[self.press_body_id].copy()
+        self.press_prev = None
+        # 臂动接入走廊(笛卡尔直线路点+逐段IK): home面 -> 沿侧向滑到与按压点
+        # 对齐(全程保持home的法向间隙, 双侧指垫离目标面均>17mm, 无碰撞风险)
+        # -> 法向分段定速逼近 -> 力闭环。
+        # 注意不能用大偏移绕行+关节空间插值: 关节直线在笛卡尔空间会弓出,
+        # 垫面被弓进目标块把自由体目标撞飞(实测1436N冲击, 臂随后甩动发散)。
+        face_home = d.geom_xpos[self.sensor_geom_id] + R0 @ np.array([0, -SENSOR_HALF_Y, 0])
+        self.arm_home_clear = float(np.clip((self.arm_tp - face_home) @ self.arm_n_world,
+                                            ARM_STANDBY + 0.003, 0.06))
+        p_align = self.arm_tp - self.arm_n_world * self.arm_home_clear
+        v_lat = p_align - face_home
+        v_lat = v_lat - self.arm_n_world * float(v_lat @ self.arm_n_world)
+        self.arm_corridor_q = []
+        q_prev = self.arm_home_q.copy()
+        nseg = max(1, int(np.ceil(float(np.linalg.norm(v_lat)) / 0.01)))
+        for k in range(1, nseg + 1):
+            q_prev = self._ik(q_prev, face_home + v_lat * (k / nseg), self.arm_R0)
+            self.arm_corridor_q.append(q_prev)
+        # IK锚点表: -arm_home_clear(=走廊终点解, 保证对齐->按压相位目标无跳变)
+        # -> +ARM_MAX_DEPTH, 1mm步长; 深度>=-ARM_STANDBY段由home出发解
+        depths = [-self.arm_home_clear]
+        dep = -self.arm_home_clear + 0.001
+        while dep < ARM_MAX_DEPTH - 1e-9:
+            depths.append(dep)
+            dep += 0.001
+        depths.append(ARM_MAX_DEPTH)
+        qs = [self.arm_corridor_q[-1] if self.arm_corridor_q else self.arm_home_q.copy()]
+        qs += [self._ik(self.arm_home_q, self.arm_tp + self.arm_n_world * dep, self.arm_R0)
+               for dep in depths[1:]]
+        self.arm_ik_anchors = (np.array(depths), np.array(qs))
+        self.arm_phase = "align" if self.arm_corridor_q else "press"
+        self.arm_corridor_i = 0
+
+    def _hold_press_target(self):
+        """红色按压目标PD软保持(世界系弹簧, 每物理步施加):
+        目标是自由体, 与双侧指垫/臂全碰撞不穿模; 弹簧把它拉回初始位,
+        8-10N按压只让位约1mm(力闭环自动补偿), 视窗暴力拖拽时让位后弹回,
+        有限约束力不会再出现静态几何卡死伺服的问题。"""
+        d = self.data
+        m = self.model
+        bid = self.press_body_id
+        p = d.xpos[bid].copy()
+        q = d.xquat[bid].copy()
+        dt = m.opt.timestep
+        v = (p - self.press_prev[0]) / dt if self.press_prev is not None else np.zeros(3)
+        # 当前真实角速度(世界系): 自由关节qvel[3:6]是体坐标系角速度须旋到世界系。
+        # 不能用四元数差分估计(滞后一步): 姿态弹簧+小惯量下滞后阻尼等效反阻尼,
+        # 曾致无接触自旋发散(30°扰动20步内到180°, 翻滚的块角反复砸击指垫)
+        qd = m.jnt_dofadr[m.body_jntadr[bid]]
+        w = d.xmat[bid].reshape(3, 3) @ d.qvel[qd + 3:qd + 6]
+        # 姿态误差旋转矢量(世界系): q_err = q ⊗ q0*
+        q0c = np.empty(4)
+        mujoco.mju_negQuat(q0c, self.press_q0)
+        qe = np.empty(4)
+        mujoco.mju_mulQuat(qe, q, q0c)
+        sn = float(np.linalg.norm(qe[1:]))
+        rvec = qe[1:] / sn * (2.0 * np.arcsin(min(1.0, sn))) if sn > 1e-9 else np.zeros(3)
+        d.xfrc_applied[bid, :3] = TARGET_HOLD_KP * (self.press_p0 - p) - TARGET_HOLD_KD * v
+        # 转动: 弹簧显式稳定(ω·dt≈0.6); 阻尼半隐式 — xfrc属显式力, 显式阻尼
+        # 每步放大|1-KDR·dt/I|, I≈5.7e-5时KDR>0.057即发散; 半隐式按主轴解耦
+        # 求解w_next=w+τ/I·dt, 任意KDR/timestep数值稳定
+        Rb = d.xmat[bid].reshape(3, 3)
+        I_b = m.body_inertia[bid]
+        tau_b = (-TARGET_HOLD_KR * (Rb.T @ rvec)
+                 - TARGET_HOLD_KDR * (Rb.T @ w) / (1.0 + TARGET_HOLD_KDR * dt / I_b))
+        d.xfrc_applied[bid, 3:] = Rb @ tau_b
+        self.press_prev = (p, q)
 
     def _arm_ik_q(self, depth):
-        """按压深插值IK锚点解, 避免闭环每步全量解IK"""
-        if self.arm_ik_anchors is None:
-            depths = np.concatenate([[-ARM_STANDBY],
-                                     np.arange(0.0, ARM_MAX_DEPTH * 1000 + 0.1, 1.0) / 1000.0])
-            qs = np.array([self._ik(self.arm_home_q,
-                                    self.arm_tp + self.arm_n_world * d,
-                                    self.arm_R0) for d in depths])
-            self.arm_ik_anchors = (depths, qs)
+        """按压深插值IK锚点解(_init_arm_ik预计算), 避免闭环每步全量解IK"""
         depths, qs = self.arm_ik_anchors
         return np.array([np.interp(depth, depths, qs[:, k]) for k in range(7)])
 
@@ -424,7 +501,11 @@ class SimSensor:
         self.tare_offset = np.zeros(3)
         self.arm_q_ref = self.arm_home_q.copy()
         self.arm_q_goal = None
-        self.arm_depth = 0.0
+        self.arm_depth = -self.arm_home_clear
+        self.arm_phase = "align" if self.arm_corridor_q else "press"
+        self.arm_corridor_i = 0
+        self.press_prev = None
+        d.xfrc_applied[:] = 0.0
         with self.lock:
             self.touch_force = 0.0
             self.touch_sx = 0.0
@@ -493,6 +574,8 @@ class SimSensor:
         if self.reset_request:
             self.reset_request = False
             self.reset_scene()
+        # 按压目标PD软保持: 自由体每步拉回初始位(全模式生效)
+        self._hold_press_target()
         # 姿态自动恢复: 夹爪倾角>20°持续2s且无任何指令 -> 复位场景。
         # 视窗拖拽扰动力无上限, 仍可能把臂甩进意外卡死姿态; 复位是最后的自愈手段
         if self.tilt_deg() > 20.0:
@@ -517,21 +600,43 @@ class SimSensor:
         if self.mode == "arm":
             self.data.ctrl[self.finger_act] = self.home_ctrl[self.finger_act]
             self.data.mocap_pos[self.touch_mocap] = PARK_POS
-            if self.arm_force <= 0.05:
-                # 撤力: 指垫退到目标面外ARM_STANDBY真间隙, 压深积分清零
-                self.arm_depth = 0.0
-                self.arm_q_goal = self._arm_ik_q(-ARM_STANDBY)
+            dt = self.model.opt.timestep
+            if self.arm_phase == "align":
+                # 侧向对齐: 逐路点跟踪home->按压点的侧向直线(保持home法向间隙,
+                # 走廊终点即锚点表最浅端, 相位切换时目标无跳变)
+                self.arm_q_goal = self.arm_corridor_q[self.arm_corridor_i]
+                if np.abs(self.arm_q_ref - self.arm_q_goal).max() < 0.03:
+                    self.arm_corridor_i += 1
+                    if self.arm_corridor_i >= len(self.arm_corridor_q):
+                        self.arm_phase = "press"
+            elif self.arm_force <= 0.05:
+                # 撤力/待命: 从按压位退回是远离方向可直接回; 从更深处(对齐完成
+                # 瞬间)前进到悬停位仍须分段限速, ref滞后追平发生在慢速区内
+                if self.arm_depth < -ARM_STANDBY:
+                    rate = ARM_APPROACH_FAST if self.arm_depth < -ARM_SLOW_ZONE \
+                        else ARM_APPROACH_SLOW
+                    self.arm_depth = min(self.arm_depth + rate * dt, -ARM_STANDBY)
+                else:
+                    self.arm_depth = -ARM_STANDBY
+                self.arm_q_goal = self._arm_ik_q(self.arm_depth)
             else:
-                # 力闭环: 开环定深标定(N/mm)随臂姿变化失效(实测同一指令力
-                # 在不同目标位置偏差4倍), 改为压深按(指令力-实测力)积分,
-                # 接触后才积分, 稳态实测力≈指令力, 与touch模式同一套机理
+                # 力闭环: 未接触时分段定速逼近(远处巡航, 距面ARM_SLOW_ZONE内
+                # 5mm/s, 触面冲击<1N, 与touch模式同一机理); 接触后压深按
+                # (指令力-实测力)积分, 稳态实测力≈指令力
                 if self.fz_filt > 0.05:
+                    # 下限取-ARM_STANDBY而非0: 目标被拖向垫面时可能在负深度就
+                    # 接触, 钳到0会瞬间跳2mm撞目标; 允许从实际接触深度积分
                     err = self.arm_force - self.fz_filt
                     self.arm_depth = float(np.clip(
-                        self.arm_depth + ARM_KI * err * self.model.opt.timestep,
-                        0.0, ARM_MAX_DEPTH))
-                elif self.arm_depth <= 0.0:
-                    self.arm_depth = 2e-6
+                        self.arm_depth + ARM_KI * err * dt, -ARM_STANDBY, ARM_MAX_DEPTH))
+                elif self.arm_depth < 0.0:
+                    rate = ARM_APPROACH_FAST if self.arm_depth < -ARM_SLOW_ZONE \
+                        else ARM_APPROACH_SLOW
+                    self.arm_depth = min(self.arm_depth + rate * dt, 0.0)
+                else:
+                    # 已到目标面原位置仍未接触(目标被拖走): 按指令力蠕动找接触
+                    self.arm_depth = min(self.arm_depth + ARM_KI * self.arm_force * dt,
+                                         ARM_MAX_DEPTH)
                 self.arm_q_goal = self._arm_ik_q(self.arm_depth)
             self.arm_q_ref += np.clip(self.arm_q_goal - self.arm_q_ref, -ARM_RATE, ARM_RATE)
             for k, aid in enumerate(self.arm_acts):
