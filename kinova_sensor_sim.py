@@ -162,6 +162,13 @@ class SimSensor:
                 self.model.geom_contype[g] = 0
                 self.model.geom_conaffinity[g] = 0
 
+        # 相邻连杆互碰排除 + 场景物体碰撞过滤(视窗拖拽防锁死), 见方法注释
+        self._setup_collision_filters()
+
+        # joint_1/3/5/7补关节限位: 无限位时视窗滑条只有±1 rad,
+        # joint_7水平基准1.5708拖不回去(范围调不到大于1), 见方法注释
+        self._setup_joint_limits()
+
         # 2F-85腱力上限±5N经连杆放大后夹取力不足, 内存中放宽(不改XML)
         fa = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "fingers_actuator")
         if fa >= 0:
@@ -191,6 +198,7 @@ class SimSensor:
         self.touch_depth = 0.0
         self.fz_filt = 0.0
         self.tilt_now = 0.0
+        self.tilt_bad_t = 0.0
         self.grasp_pct = 0.0
         self.grasp_ctrl = 0.0
         self.auto_mode = False
@@ -222,6 +230,81 @@ class SimSensor:
         self._calibrate_home()
         self._init_arm_ik()
         self.reset_scene()
+
+    def _setup_joint_limits(self):
+        """视窗关节滑条范围修复(内存中改, 不动XML):
+        XML里joint_1/3/5/7未定义range(无限位关节), MuJoCo视窗对无限位关节的
+        拖拽滑条只会给±1 rad, 而joint_7水平基准位是1.5708 rad -- 拖过之后
+        永远拖不回水平, 即"范围根本调不到大于1"。真机Gen3的roll轴
+        (J1/J3/J5/J7)限位±175°=±3.0543 rad, 但home姿态joint_3=π略超,
+        统一取±3.2 rad留余量; 对应执行器ctrlrange同步放开, ctrl面板
+        同样不再被钳在±1。
+        """
+        LIM = 3.2
+        for name in ("joint_1", "joint_3", "joint_5", "joint_7"):
+            j = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            if j >= 0:
+                self.model.jnt_range[j] = [-LIM, LIM]
+                self.model.jnt_limited[j] = 1
+            a = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+            if a >= 0:
+                self.model.actuator_ctrlrange[a] = [-LIM, LIM]
+                self.model.actuator_ctrllimited[a] = 1
+
+    def _setup_collision_filters(self):
+        """视窗拖拽防锁死的碰撞过滤(全部内存中改, 不动XML):
+        1) 相邻连杆(parent-child)互碰排除: 真实机械臂相邻连杆以转轴相连本不互碰,
+           凸包粗糙互相穿透时接触求解器产生数千N刚性约束, 远超伺服力矩上限
+           (大joint±105/小joint±52 N·m), 视窗拖拽关节稍过位姿即永久卡死。
+           用逐body独立碰撞位实现: contype=bit(b), conaffinity=bit0|其余非相邻body位,
+           非相邻连杆仍正常互碰(真实自碰撞检测保留)。
+        2) 触控mocap盒只与传感器垫/左指垫碰撞: 用户在3D视窗里把盒子拖进臂内
+           也不会砸翻机械臂(mocap体接触等效静态几何, 求解器全力弹射臂)。
+        3) 红色按压目标只与传感器垫/左指垫碰撞: 臂动模式按压链路不变,
+           但臂本体被拖进目标时不再被静态几何卡死。
+        """
+        m = self.model
+        BIT_TOUCH = 1 << 28   # 触控盒 <-> 传感器侧
+        BIT_TARGET = 1 << 27  # 按压目标 <-> 传感器侧
+
+        # 1) 相邻连杆排除: 所有 parent 非 world 的 body 参与位分配
+        bodies = [b for b in range(1, m.nbody) if m.body_parentid[b] != 0]
+        assert len(bodies) < 26, "body数超出可用碰撞位"
+        bit = {b: 1 << (1 + i) for i, b in enumerate(bodies)}
+        children = {}
+        for b in bodies:
+            children.setdefault(int(m.body_parentid[b]), []).append(b)
+
+        def affinity_of(b, extra=0):
+            excl = {b, int(m.body_parentid[b])} | set(children.get(b, []))
+            allow = 0
+            for x in bodies:
+                if x not in excl:
+                    allow |= bit[x]
+            return 1 | allow | extra
+
+        for b in bodies:
+            for g in range(m.ngeom):
+                if m.geom_bodyid[g] == b and (m.geom_contype[g] or m.geom_conaffinity[g]):
+                    m.geom_contype[g] = bit[b]
+                    m.geom_conaffinity[g] = affinity_of(b)
+
+        # 2)+3) 传感器侧body(tactile_sensor/left_pad)额外允许与触控盒碰撞
+        ts_bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "tactile_sensor")
+        lp_bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "left_pad")
+        for b in (ts_bid, lp_bid):
+            for g in range(m.ngeom):
+                if m.geom_bodyid[g] == b and (m.geom_contype[g] or m.geom_conaffinity[g]):
+                    m.geom_conaffinity[g] = affinity_of(b, BIT_TOUCH)
+
+        tg = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "touch_finger_geom")
+        if tg >= 0:
+            m.geom_contype[tg] = BIT_TOUCH
+            m.geom_conaffinity[tg] = BIT_TOUCH
+        pg = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "press_target_geom")
+        if pg >= 0:
+            m.geom_contype[pg] = BIT_TARGET
+            m.geom_conaffinity[pg] = 1 | bit[ts_bid] | bit[lp_bid]
 
     def _load_signal(self):
         cfg = dict(DEFAULT_SIGNAL_CONFIG)
@@ -336,6 +419,7 @@ class SimSensor:
         self.touch_depth = 0.0
         self.fz_filt = 0.0
         self.grasp_ctrl = 0.0
+        self.tilt_bad_t = 0.0
         self.signal.reset()
         self.tare_offset = np.zeros(3)
         self.arm_q_ref = self.arm_home_q.copy()
@@ -409,6 +493,20 @@ class SimSensor:
         if self.reset_request:
             self.reset_request = False
             self.reset_scene()
+        # 姿态自动恢复: 夹爪倾角>20°持续2s且无任何指令 -> 复位场景。
+        # 视窗拖拽扰动力无上限, 仍可能把臂甩进意外卡死姿态; 复位是最后的自愈手段
+        if self.tilt_deg() > 20.0:
+            self.tilt_bad_t += self.model.opt.timestep
+            if self.tilt_bad_t > 2.0:
+                with self.lock:
+                    idle = (self.touch_force <= 0.01 and self.arm_force <= 0.05
+                            and not self.auto_mode)
+                if idle and self.grasp_pct < 1.0:
+                    print(f"[自动恢复] 夹爪姿态异常 tilt={self.tilt_deg():.1f}deg, 已复位场景")
+                    self.reset_scene()
+                self.tilt_bad_t = 0.0
+        else:
+            self.tilt_bad_t = 0.0
         if self.auto_mode:
             self.auto_t += 0.004
             self.grasp_pct = (np.sin(self.auto_t) * 0.5 + 0.5) * 100
