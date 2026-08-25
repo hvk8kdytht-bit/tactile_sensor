@@ -1,0 +1,24 @@
+<mujoco model="gen3_2f85_tactile_scene">
+  <include file="gen3_2f85_sensor.xml"/>
+
+  <worldbody>
+    <body name="touch_finger" mocap="true">
+      <geom name="touch_finger_geom" type="box" size="0.012 0.012 0.012"
+            rgba="0.85 0.6 0.15 1" condim="4" friction="0.8 0.3 0.1"
+            solimp="0.95 0.99 0.001" solref="0.004 1"/>
+    </body>
+
+    <body name="grasp_box" pos="0.75 0 0.55">
+      <freejoint name="grasp_box_joint"/>
+      <geom name="grasp_box_geom" type="box" size="0.012 0.0075 0.036" mass="0.05"
+            rgba="0.15 0.6 0.85 1" condim="4" friction="0.9 0.4 0.1"
+            solimp="0.95 0.99 0.001" solref="0.004 1"/>
+    </body>
+
+    <body name="press_target" pos="0.6355 -0.0061 0.4337">
+      <geom name="press_target_geom" type="box" size="0.014 0.012 0.014"
+            rgba="0.9 0.3 0.3 1" condim="4" friction="0.8 0.3 0.1"
+            solimp="0.95 0.99 0.001" solref="0.004 1"/>
+    </body>
+  </worldbody>
+</mujoco>

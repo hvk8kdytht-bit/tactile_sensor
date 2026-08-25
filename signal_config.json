@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "sample_rate": 200.0,
+  "adc_bits": 12,
+  "full_scale": 50.0,
+  "noise_sigma": 0.02,
+  "noise_relative": 0.002,
+  "drift_sigma": 0.05,
+  "drift_tau": 60.0,
+  "bandwidth": 50.0,
+  "crosstalk": [[1.0, 0.02, -0.01], [-0.015, 1.0, 0.02], [0.01, -0.02, 1.0]],
+  "hysteresis_frac": 0.02,
+  "hysteresis_tau": 5.0,
+  "creep_gain": 0.02,
+  "creep_tau": 8.0,
+  "deadband": 0.004
+}

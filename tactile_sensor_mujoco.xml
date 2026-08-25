@@ -1,0 +1,58 @@
+<mujoco model="tactile_sensor_sim">
+  <compiler angle="radian" coordinate="local"/>
+
+  <option timestep="0.001" integrator="RK4" gravity="0 0 -9.81">
+    <flag warmstart="enable"/>
+  </option>
+
+  <default>
+    <geom condim="4" friction="1.0 0.5 0.1" solref="0.01 1" solimp="0.9 0.95 0.001"/>
+  </default>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.15 0.2 0.3" rgb2="0.2 0.25 0.35" width="512" height="512"/>
+    <material name="grid_mat" texture="grid" texrepeat="8 8" reflectance="0.1"/>
+    <texture name="sensor_tex" type="2d" builtin="checker" rgb1="0.2 0.6 0.3" rgb2="0.15 0.5 0.25" width="256" height="256"/>
+    <material name="sensor_mat" texture="sensor_tex" texrepeat="4 4" reflectance="0.3"/>
+    <texture name="ball_tex" type="cube" builtin="gradient" rgb1="0.8 0.3 0.2" rgb2="0.5 0.15 0.1" width="128"/>
+    <material name="ball_mat" texture="ball_tex" reflectance="0.4"/>
+  </asset>
+
+  <visual>
+    <headlight diffuse="0.8 0.8 0.8" ambient="0.3 0.3 0.3" specular="0.2 0.2 0.2"/>
+    <rgba haze="0.1 0.1 0.15 1"/>
+    <global azimuth="120" elevation="-25"/>
+  </visual>
+
+  <worldbody>
+    <light name="light1" pos="0 0 3" dir="0 0 -1" diffuse="0.8 0.8 0.8" castshadow="true"/>
+    <light name="light2" pos="0.3 0.3 2" dir="-0.3 -0.3 -2" diffuse="0.4 0.4 0.4"/>
+
+    <geom name="ground" type="plane" size="0.5 0.5 0.01" material="grid_mat" pos="0 0 -0.06" contype="0" conaffinity="0"/>
+
+    <body name="sensor" pos="0 0 0">
+      <geom name="sensor_body" type="box" size="0.0085 0.0085 0.0026"
+            material="sensor_mat" rgba="0.2 0.6 0.3 1" contype="0" conaffinity="0"/>
+      <geom name="sensor_top" type="box" size="0.008 0.008 0.0005"
+            pos="0 0 0.0031" rgba="0.8 0.8 0.85 1" mass="0.001"/>
+      <site name="sensor_center" pos="0 0 0.0036" size="0.002" rgba="1 0 0 0.3"/>
+    </body>
+
+    <body name="press_ball" pos="0 0 0.08">
+      <joint name="ball_jx" type="slide" axis="1 0 0" range="-0.02 0.02"/>
+      <joint name="ball_jy" type="slide" axis="0 1 0" range="-0.02 0.02"/>
+      <joint name="ball_jz" type="slide" axis="0 0 1" range="-0.08 0.08"/>
+      <geom name="ball" type="sphere" size="0.01" material="ball_mat" mass="0.05"
+            condim="4" friction="0.8 0.3 0.1"/>
+    </body>
+  </worldbody>
+
+  <contact>
+    <pair geom1="sensor_top" geom2="ball" solref="0.005 1" solimp="0.95 0.99 0.0005"/>
+  </contact>
+
+  <sensor>
+    <touch name="sensor_touch" site="sensor_center"/>
+  </sensor>
+
+</mujoco>

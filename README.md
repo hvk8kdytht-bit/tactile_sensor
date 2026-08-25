@@ -1,6 +1,47 @@
 # 触觉传感器三维力实时显示
 
-基于 UART 串口通信的触觉传感器三维力实时可视化工具。支持多种工作模式和输出频率，提供 Web 端三维力向量实时显示。
+基于 UART 串口通信的触觉传感器三维力实时可视化工具。支持多种工作模式和输出频率，提供 Web 端三维力实时显示。
+
+## MuJoCo 触觉传感器仿真
+
+`kinova_sensor_sim.py` — Kinova Gen3 机械臂 + Robotiq 2F-85 夹爪 + 左指垫触觉传感器的物理仿真，在物理真值力之上叠加真实传感器信号特性层。
+
+```bash
+pip install mujoco numpy
+python kinova_sensor_sim.py
+```
+
+浏览器打开 `http://127.0.0.1:8771/`（Web 控制面板）并同时显示 MuJoCo 原生 3D 窗口。
+
+### 三种交互模式
+
+| 模式 | 说明 |
+|------|------|
+| touch | 网页触控板拖拽，模拟手指按压传感器表面（法向力 + 剪切力，力闭环精确跟踪指令力） |
+| grasp | 夹爪闭合抓取薄板，右指垫把物体压向传感器（限速逼近防冲击弹出，35N 夹持力上限） |
+| arm | 机械臂 IK 主动伸过去按压场景中的红色目标物（力闭环，撤力后退到目标面外 5mm 真间隙） |
+
+### 信号特性层（SignalEmulator）
+
+物理真值力 → 轴间串扰 → 迟滞（回隙）→ 蠕变 → 带宽低通 → 零漂 OU → 白噪声 → 死区 → ADC 量化限幅 → 采样保持。
+参数存于 `signal_config.json`，可用 `fit_signal_params.py` 从真实传感器录制数据自动拟合后注入；Web 面板可实时调节信号参数，并以双曲线对比物理真值 vs 传感器输出。
+
+### 验证（无头，无需界面）
+
+```bash
+python probe_fix_verify.py    # 11 项: 三模式力闭环 / 水平保持 / 薄板夹取回归
+python test_signal_layer.py   # 20 项: 信号层单元特性 + 三模式集成回归
+```
+
+### 模型与主要文件
+
+| 文件 | 说明 |
+|------|------|
+| `kinova_sensor_sim.py` | 主仿真程序（三种模式 + 信号层 + Web 面板） |
+| `mujoco_menagerie/kinova_gen3/gen3_2f85_sensor.xml` | 传感器化夹爪模型（不要直接修改） |
+| `mujoco_menagerie/kinova_gen3/gen3_2f85_sensor_scene.xml` | 场景（触控 mocap、薄板、按压目标） |
+| `signal_config.json` | 信号特性层参数 |
+| `fit_signal_params.py` | 从真实数据拟合信号参数 |
 
 ## 功能特性
 
