@@ -1,0 +1,13 @@
+{
+  "object": "香蕉",
+  "test_date": "2026-08-26",
+  "min_success_force": 5.6634,
+  "steps": [
+    {
+      "step": 1,
+      "force": 5.6634,
+      "result": "SUCCESS"
+    }
+  ],
+  "notes": "表面光滑弧形，需最大力"
+}

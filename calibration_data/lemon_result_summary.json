@@ -1,0 +1,13 @@
+{
+  "object": "柠檬",
+  "test_date": "2026-08-26",
+  "min_success_force": 0.3348,
+  "steps": [
+    {
+      "step": 1,
+      "force": 0.3348,
+      "result": "SUCCESS"
+    }
+  ],
+  "notes": "表面粗糙、重量轻，需力最小"
+}

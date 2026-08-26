@@ -1,0 +1,27 @@
+{
+  "object": "block",
+  "object_name": "物块",
+  "steps": [
+    {
+      "step": 1,
+      "success": true,
+      "mag_mean": 2.1691,
+      "z_mean": 2.1414,
+      "instruction": "稳定夹持（基准）"
+    },
+    {
+      "step": 2,
+      "success": true,
+      "mag_mean": 4.223,
+      "z_mean": 4.1653,
+      "instruction": "比基准稍轻"
+    }
+  ],
+  "min_success_force": {
+    "mag_mean": 2.1691,
+    "z_mean": 2.1414,
+    "x_mean": -0.2228,
+    "y_mean": -0.2637,
+    "step": 1
+  }
+}

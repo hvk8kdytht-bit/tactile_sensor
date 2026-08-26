@@ -1,0 +1,19 @@
+{
+  "object": "弹力球",
+  "test_date": "2026-08-26",
+  "test_type": "最小成功夹取力",
+  "steps": [
+    {
+      "step": 1,
+      "force": 1.4185,
+      "result": "FAIL"
+    },
+    {
+      "step": 2,
+      "force": 1.4933,
+      "result": "SUCCESS"
+    }
+  ],
+  "min_success_force": 1.4933,
+  "notes": "弹力球表面软，1.42N夹不住，1.49N夹住。比物块(2.17N)所需力更小。"
+}

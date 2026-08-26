@@ -1,0 +1,13 @@
+{
+  "object": "梨",
+  "test_date": "2026-08-26",
+  "min_success_force": 3.6326,
+  "steps": [
+    {
+      "step": 1,
+      "force": 3.6326,
+      "result": "SUCCESS"
+    }
+  ],
+  "notes": "弧面光滑"
+}

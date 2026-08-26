@@ -1,0 +1,19 @@
+{
+  "object": "苹果",
+  "test_date": "2026-08-26",
+  "test_type": "最小成功夹取力",
+  "steps": [
+    {
+      "step": 1,
+      "force": 4.0202,
+      "result": "SUCCESS"
+    },
+    {
+      "step": 2,
+      "force": 3.7576,
+      "result": "SUCCESS"
+    }
+  ],
+  "min_success_force": 3.7576,
+  "notes": "苹果体积大、表面光滑，需最大夹持力。3.76N成功夹取。"
+}
