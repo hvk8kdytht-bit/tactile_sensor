@@ -1,0 +1,65 @@
+{
+  "retest_date": "2026-08-27",
+  "sensor_mode": "0xB1_standard",
+  "purpose": "复测初测中Z轴为负值的4个物体，验证Z轴符号问题根因（0xB2动态模式测力的变化分量）",
+  "calibration_procedure": "空载校准(0xB1)后正常力度夹取，采集3秒(100Hz, 390帧)",
+  "results": [
+    {
+      "object": "弹力球",
+      "file": "block_step02_PENDING_20260827_111047.csv",
+      "force_mag_mean": 4.4794,
+      "z_mean": 4.3623,
+      "x_mean": -1.0144,
+      "y_mean": 0.0795,
+      "z_sign": "positive",
+      "initial_test_z": -1.4927,
+      "initial_test_mode": "0xB2_dynamic"
+    },
+    {
+      "object": "软球",
+      "file": "block_step03_PENDING_20260827_112654.csv",
+      "force_mag_mean": 1.4541,
+      "z_mean": 1.2901,
+      "x_mean": -0.6704,
+      "y_mean": 0.0247,
+      "z_sign": "positive",
+      "initial_test_z": -1.7048,
+      "initial_test_mode": "0xB2_dynamic"
+    },
+    {
+      "object": "梨",
+      "file": "block_step04_PENDING_20260827_114408.csv",
+      "force_mag_mean": 19.6531,
+      "z_mean": 19.5808,
+      "x_mean": -0.1695,
+      "y_mean": -1.6755,
+      "z_sign": "positive",
+      "initial_test_z": -3.6037,
+      "initial_test_mode": "0xB2_dynamic"
+    },
+    {
+      "object": "草莓",
+      "file": "block_step05_PENDING_20260827_115005.csv",
+      "force_mag_mean": 0.7343,
+      "z_mean": 0.6717,
+      "x_mean": -0.2781,
+      "y_mean": 0.1038,
+      "z_sign": "positive",
+      "initial_test_z": -5.0545,
+      "initial_test_mode": "0xB2_dynamic"
+    }
+  ],
+  "verification_experiments": [
+    {
+      "name": "零点验证",
+      "file": "block_step00_PENDING_20260827_102901.csv",
+      "result": "空载2秒，XYZ全部为0.0000，基线干净"
+    },
+    {
+      "name": "8秒动态验证(松开-夹紧-保持)",
+      "file": "block_step01_PENDING_20260827_103535.csv",
+      "result": "空载XYZ=0，夹紧后Z=+416(正)，保持稳定在+411，数值随动作实时响应"
+    }
+  ],
+  "conclusion": "0xB1标准模式下4个物体Z轴全部为正。初测负值根因：0xB2动态模式测量力的变化分量(高通特性)，符号取决于采集时刻力的增减趋势，非传感器方向翻转。后续标定统一使用0xB1标准模式。"
+}
